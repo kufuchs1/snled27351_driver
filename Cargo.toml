@@ -1,0 +1,57 @@
+[package]
+name = "snled27351-driver"
+version = "2.0.0"
+description = "Async embedded-hal driver for the SNLED27351 matrix LED driver IC, supporting SPI and I2C transports"
+repository = "https://github.com/fuchskurt/snled27351_driver"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+categories = ["embedded", "no-std", "hardware-support"]
+keywords = ["led", "driver", "embedded-hal", "async", "no-std"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+i2c = []
+spi = []
+
+[dependencies]
+embedded-hal = "1"
+embedded-hal-async = "1"
+embassy-time = "0.5"
+
+[workspace]
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = 1 }
+pedantic = { level = "deny", priority = 1 }
+restriction = { level = "deny", priority = 1 }
+nursery = { level = "deny", priority = 1 }
+blanket_clippy_restriction_lints = { level = "allow", priority = 2 }
+future_not_send = { level = "allow", priority = 2 }
+question_mark_used = { level = "allow", priority = 2 }
+implicit_return = { level = "allow", priority = 2 }
+separated_literal_suffix = { level = "allow", priority = 2 }
+single_call_fn = { level = "allow", priority = 2 }
+self_named_module_files = { level = "allow", priority = 2 }
+pub_with_shorthand = { level = "allow", priority = 2 }
+pub_use = { level = "allow", priority = 2 }
+
+[lints]
+workspace = true
+
+[lib]
+name = "snled27351_driver"
+test = false
+bench = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "symbols"
+overflow-checks = false
