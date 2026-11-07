@@ -21,6 +21,10 @@ embedded-hal = "1"
 embedded-hal-async = "1"
 embassy-time = "0.5"
 
+[dev-dependencies]
+embassy-futures = "0.1"
+embassy-time = { version = "0.5", features = ["std", "generic-queue-8"] }
+
 [workspace]
 
 [workspace.lints.rust]

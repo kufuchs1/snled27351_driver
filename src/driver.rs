@@ -66,7 +66,7 @@ const DETECTION_POLL_ATTEMPTS: u32 = 50;
 
 /// Mapping of a single RGB LED to its three PWM register addresses on one
 /// driver chip.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Led {
     /// PWM register address for the blue channel.
@@ -82,7 +82,7 @@ pub struct Led {
 impl Led {
     /// Returns the PWM register address for the blue channel.
     #[inline]
-    #[must_use]
+    #[must_use = "the blue channel address is only useful if read"]
     pub const fn blue(self) -> u8 { self.blue }
 
     /// Returns the index of the driver chip controlling this LED.
@@ -90,12 +90,12 @@ impl Led {
     /// The index corresponds to the position in the transport's device array
     /// (e.g. the `addrs` slice for I2C or the `devices` array for SPI).
     #[inline]
-    #[must_use]
+    #[must_use = "the driver index is only useful if read"]
     pub const fn driver(self) -> u8 { self.driver }
 
     /// Returns the PWM register address for the green channel.
     #[inline]
-    #[must_use]
+    #[must_use = "the green channel address is only useful if read"]
     pub const fn green(self) -> u8 { self.green }
 
     /// Creates a new [`Led`] with the given driver index and channel register
@@ -117,12 +117,12 @@ impl Led {
     /// const MY_LED: Led = Led::new(0, pwm_register(1, 1), pwm_register(3, 1), pwm_register(2, 1));
     /// ```
     #[inline]
-    #[must_use]
+    #[must_use = "constructing an `Led` has no side effects"]
     pub const fn new(driver: u8, red: u8, green: u8, blue: u8) -> Self { Self { blue, driver, green, red } }
 
     /// Returns the PWM register address for the red channel.
     #[inline]
-    #[must_use]
+    #[must_use = "the red channel address is only useful if read"]
     pub const fn red(self) -> u8 { self.red }
 }
 
@@ -131,7 +131,7 @@ impl Led {
 /// Wraps the 24-byte LED open (or short) register block of one chip. Bits
 /// are addressed by PWM register address, so results can be queried with the
 /// same addresses used to build the [`Led`] layout.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct LedStatusMap {
     /// Raw status register contents; index is the offset within the block.
     flags: [u8; LED_OPEN_REGISTER_COUNT],
@@ -145,7 +145,7 @@ impl LedStatusMap {
     /// enabled during the scan (datasheet section 6.8); disabled channels
     /// always read as unflagged. Out-of-range addresses return `false`.
     #[inline]
-    #[must_use]
+    #[must_use = "the flag state is only useful if read"]
     pub fn is_flagged(&self, pwm_addr: u8) -> bool {
         // One status bit per channel: byte = addr / 8, bit = addr % 8.
         let byte = usize::from(pwm_addr >> 3_u8);
@@ -155,30 +155,42 @@ impl LedStatusMap {
 
     /// Returns the raw 24-byte status register block.
     #[inline]
-    #[must_use]
+    #[must_use = "the raw status block is only useful if read"]
     pub const fn raw(&self) -> &[u8; LED_OPEN_REGISTER_COUNT] { &self.flags }
 }
 
-/// PWM shadow buffer and dirty flag for a single driver chip.
+/// PWM shadow buffer and dirty range for a single driver chip.
 struct DriverBuf {
-    /// Whether this driver's buffer has unsent changes.
-    dirty: bool,
+    /// Inclusive register range `(first, last)` with unsent changes, or
+    /// `None` when the hardware is in sync with the shadow buffer.
+    dirty: Option<(u8, u8)>,
     /// PWM shadow buffer; index is the raw register address.
     pwm:   [u8; PWM_REGISTER_COUNT],
 }
 
 impl DriverBuf {
-    /// Creates a new zeroed, clean [`DriverBuf`].
-    const fn new() -> Self { Self { dirty: false, pwm: [0_u8; PWM_REGISTER_COUNT] } }
+    /// Returns the start register and the slice of the shadow buffer that
+    /// must be written to bring the hardware in sync, if any.
+    fn dirty_span(&self) -> Option<(u8, &[u8])> {
+        let (first, last) = self.dirty?;
+        let span = self.pwm.get(usize::from(first)..=usize::from(last))?;
+        Some((first, span))
+    }
 
-    /// Writes RGB values into the shadow buffer for one LED and marks dirty.
+    /// Creates a new zeroed, clean [`DriverBuf`].
+    const fn new() -> Self { Self { dirty: None, pwm: [0_u8; PWM_REGISTER_COUNT] } }
+
+    /// Writes RGB values into the shadow buffer for one LED and widens the
+    /// dirty range to cover every register whose value actually changed.
     fn stage(&mut self, led: Led, red: u8, green: u8, blue: u8) {
         for (addr, value) in [(led.red, red), (led.green, green), (led.blue, blue)] {
-            if let Some(slot) = self.pwm.get_mut(usize::from(addr)) {
-                *slot = value;
+            let Some(slot) = self.pwm.get_mut(usize::from(addr)) else { continue };
+            if *slot == value {
+                continue;
             }
+            *slot = value;
+            self.dirty = Some(self.dirty.map_or((addr, addr), |(first, last)| (first.min(addr), last.max(addr))));
         }
-        self.dirty = true;
     }
 }
 
@@ -274,8 +286,10 @@ where
 
     /// Flushes all dirty PWM shadow buffers to hardware.
     ///
-    /// Only drivers with pending changes are written, so calling this after
-    /// a no-op `stage_led` is free.
+    /// Only the contiguous register span covering changed values is written
+    /// on each chip, and chips without pending changes are skipped entirely,
+    /// so staging a value the LED already has (or an out-of-range index)
+    /// makes this call free.
     ///
     /// # Errors
     ///
@@ -290,11 +304,9 @@ where
         // `self.transport` is borrowed mutably for the bus call.
         let transport = &mut self.transport;
         for (chip_index, buf) in self.bufs.iter_mut().enumerate() {
-            if !buf.dirty {
-                continue;
-            }
-            transport.write_page(chip_index, PAGE_PWM, 0x00, &buf.pwm).await?;
-            buf.dirty = false;
+            let Some((first_reg, span)) = buf.dirty_span() else { continue };
+            transport.write_page(chip_index, PAGE_PWM, first_reg, span).await?;
+            buf.dirty = None;
         }
         Ok(())
     }
@@ -379,7 +391,7 @@ where
             // Zero all PWM registers and sync the shadow buffer.
             transport.write_page(chip_index, PAGE_PWM, 0x00, &[0x00_u8; PWM_REGISTER_COUNT]).await?;
             buf.pwm.fill(0x00);
-            buf.dirty = false;
+            buf.dirty = None;
 
             // Program current tune for all CB channels.
             transport
@@ -400,7 +412,7 @@ where
 
     /// Consumes the driver and returns the underlying transport.
     #[inline]
-    #[must_use]
+    #[must_use = "dropping the returned transport discards the bus"]
     pub fn into_transport(self) -> T { self.transport }
 
     /// Creates a new driver from the given transport and LED layout.
@@ -580,13 +592,13 @@ where
 
     /// Returns a shared reference to the underlying transport.
     #[inline]
-    #[must_use]
+    #[must_use = "the transport reference is only useful if used"]
     pub const fn transport(&self) -> &T { &self.transport }
 
     /// Returns a mutable reference to the underlying transport, e.g. to
     /// drive [`set_sdb`](Transport::set_sdb) directly.
     #[inline]
-    #[must_use]
+    #[must_use = "the transport reference is only useful if used"]
     pub const fn transport_mut(&mut self) -> &mut T { &mut self.transport }
 
     /// Releases all driver chips from software shutdown or software sleep
@@ -603,11 +615,19 @@ where
     #[inline]
     pub async fn wake(&mut self) -> Result<(), T::Error> {
         // Generate bus activity to wake sleeping chips. A sleeping chip may
-        // ignore or NACK this write - only the clock edges matter, so the
-        // result is intentionally discarded. For chips that are merely shut
-        // down it rewrites the value they already hold.
-        match self.write_function_all(REG_SOFTWARE_SHUTDOWN, SOFTWARE_SHUTDOWN_SSD_SHUTDOWN).await {
-            Ok(()) | Err(_) => {},
+        // ignore or NACK this write - only the clock edges matter, so each
+        // result is intentionally discarded. Every chip is addressed even if
+        // an earlier one failed, in case the chips do not share a clock line.
+        // For chips that are merely shut down it rewrites the value they
+        // already hold.
+        for chip_index in 0..N {
+            match self
+                .transport
+                .write_page(chip_index, PAGE_FUNCTION, REG_SOFTWARE_SHUTDOWN, &[SOFTWARE_SHUTDOWN_SSD_SHUTDOWN])
+                .await
+            {
+                Ok(()) | Err(_) => {},
+            }
         }
         // Datasheet: system wakeup time is 128 µs.
         Timer::after_micros(150).await;

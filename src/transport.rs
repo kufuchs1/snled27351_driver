@@ -32,14 +32,14 @@ pub use spi::Controller;
 ///
 /// With `NoSdb`, [`Transport::set_sdb`] and the SDB cycle in
 /// [`Transport::reset`] become no-ops, and hardware sleep is unavailable.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct NoSdb;
 
 impl NoSdb {
     /// Creates a new [`NoSdb`] placeholder pin.
     #[inline]
-    #[must_use]
+    #[must_use = "constructing `NoSdb` has no side effects"]
     pub const fn new() -> Self { Self }
 }
 
@@ -138,7 +138,7 @@ pub trait Transport {
 ///
 /// [`SpiDevice::Error`]: embedded_hal_async::spi::ErrorType::Error
 /// [`I2c::Error`]: embedded_hal_async::i2c::ErrorType::Error
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error<E> {
     /// An underlying bus (SPI or I2C) error occurred.
