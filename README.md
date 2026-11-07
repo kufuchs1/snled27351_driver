@@ -6,7 +6,8 @@ LED driver IC, over SPI or I2C.
 - One driver core, generic over a `Transport`. SPI and I2C share all register
   logic.
 - Supports several chips per bus. The chip count is a const generic shared by
-  the driver and the transport, so a mismatch is a compile error.
+  the driver and the transport. With the provided transports, a mismatch is a
+  compile error.
 - Keeps a PWM shadow buffer per chip. `flush` sends only the register range
   that changed, and skips chips with no changes.
 - Power management: software shutdown, software sleep, and hardware sleep via
@@ -93,7 +94,7 @@ The driver waits using `embassy-time`, so your application must provide an
 
 ## Minimum supported Rust version
 
-Rust 1.85 (edition 2024). Development uses the nightly toolchain pinned in
+Rust 1.85 (edition 2024). Development uses the dated nightly pinned in
 `rust-toolchain.toml` for rustfmt and clippy.
 
 ## License

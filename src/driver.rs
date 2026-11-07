@@ -2,8 +2,10 @@
 //!
 //! Generic over a [`Transport`] `T` so the same driver logic covers both
 //! SPI and I2C without any duplication. `N` is the number of driver chips;
-//! it is taken from the transport's [`Transport<N>`] implementation, so a
-//! mismatch between the driver and the transport cannot compile.
+//! it is taken from the transport's [`Transport<N>`] implementation. With the
+//! provided transports (or any transport that ties `N` to its type, see
+//! [`Transport`]'s chip-count docs), a mismatch between the driver and the
+//! transport cannot compile.
 use crate::{
     registers::{
         CURRENT_TUNE_REGISTER_COUNT,
@@ -213,8 +215,9 @@ impl DriverBuf {
 ///
 /// Generic over a [`Transport`] `T` so the same driver logic covers both
 /// SPI and I2C without any duplication. `N` is the number of driver chips;
-/// it is inferred from the transport, which must implement
-/// [`Transport<N>`].
+/// the transport must implement [`Transport<N>`]. With the provided
+/// transports, `N` is inferred from the transport and a mismatch does not
+/// compile.
 ///
 /// # Usage
 ///

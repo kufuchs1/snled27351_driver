@@ -16,15 +16,22 @@ use snled27351_driver::{
     pwm_register,
     registers::{
         OPEN_SHORT_FLAG_ODINT,
+        OPEN_SHORT_FLAG_SDINT,
+        PAGE_CURRENT_TUNE,
         PAGE_FUNCTION,
         PAGE_LED_CONTROL,
         PAGE_PWM,
         REG_LED_OPEN_FIRST,
+        REG_LED_SHORT_FIRST,
         REG_OPEN_SHORT_DUTY,
         REG_OPEN_SHORT_ENABLE,
         REG_OPEN_SHORT_FLAG,
+        REG_PULLDOWNUP,
         REG_SCAN_PHASE,
+        REG_SLEW_RATE_CONTROL_MODE_1,
+        REG_SLEW_RATE_CONTROL_MODE_2,
         REG_SOFTWARE_SHUTDOWN,
+        REG_SOFTWARE_SLEEP,
         SCAN_PHASE_4_CHANNEL,
         SCAN_PHASE_12_CHANNEL,
         SOFTWARE_SHUTDOWN_SSD_NORMAL,
@@ -53,8 +60,9 @@ impl MockTransport {
     }
 }
 
-/// The mock serves any chip count; tests pick `N` via the `Driver` type.
-impl<const N: usize> Transport<N> for MockTransport {
+/// Implemented for exactly two chips, the pattern the `Transport` docs
+/// recommend, so `Driver::new` infers `N` in these tests.
+impl Transport<2> for MockTransport {
     type Error = ();
 
     async fn read_reg(&mut self, driver_index: usize, page: u8, reg: u8) -> Result<u8, ()> {
@@ -101,13 +109,28 @@ fn pwm_register_matches_datasheet_map() {
 }
 
 #[test]
-fn init_programs_every_chip_and_ends_in_normal_mode() {
-    let mut driver = Driver::<_, 2>::new(MockTransport::default(), &LEDS);
+fn init_programs_every_chip_with_the_datasheet_sequence() {
+    let mut driver = Driver::new(MockTransport::default(), &LEDS);
     block_on(driver.init(0xCC)).unwrap();
-    for chip in 0..2 {
-        let last = driver.transport().writes.iter().rev().find(|(c, ..)| *c == chip).unwrap().clone();
-        assert_eq!(last, (chip, PAGE_FUNCTION, REG_SOFTWARE_SHUTDOWN, vec![SOFTWARE_SHUTDOWN_SSD_NORMAL]));
-    }
+
+    let expected = |chip: usize| -> Vec<Write> {
+        vec![
+            (chip, PAGE_FUNCTION, REG_SOFTWARE_SHUTDOWN, vec![SOFTWARE_SHUTDOWN_SSD_SHUTDOWN]),
+            (chip, PAGE_FUNCTION, REG_PULLDOWNUP, vec![0xAA]),
+            (chip, PAGE_FUNCTION, REG_SCAN_PHASE, vec![SCAN_PHASE_12_CHANNEL]),
+            (chip, PAGE_FUNCTION, REG_SLEW_RATE_CONTROL_MODE_1, vec![0x04]),
+            (chip, PAGE_FUNCTION, REG_SLEW_RATE_CONTROL_MODE_2, vec![0xC0]),
+            (chip, PAGE_FUNCTION, REG_SOFTWARE_SLEEP, vec![0x00]),
+            (chip, PAGE_LED_CONTROL, 0x00, vec![0x00; 24]),
+            (chip, PAGE_PWM, 0x00, vec![0x00; 192]),
+            (chip, PAGE_CURRENT_TUNE, 0x00, vec![0xCC; 12]),
+            (chip, PAGE_LED_CONTROL, 0x00, vec![0xFF; 24]),
+            (chip, PAGE_FUNCTION, REG_SOFTWARE_SHUTDOWN, vec![SOFTWARE_SHUTDOWN_SSD_NORMAL]),
+        ]
+    };
+    let mut all = expected(0);
+    all.extend(expected(1));
+    assert_eq!(driver.transport().writes, all);
 }
 
 #[test]
@@ -131,6 +154,21 @@ fn flush_single_channel_change_is_one_byte() {
 
     block_on(driver.set_led(1, 10, 99, 30)).unwrap();
     assert_eq!(driver.transport().pwm_writes(), vec![(0, PAGE_PWM, pwm_register(3, 2), vec![99])]);
+}
+
+#[test]
+fn dirty_range_grows_downward() {
+    let mut driver = initialized_driver();
+    // Stage the higher addresses first so the lower bound has to move.
+    driver.stage_led(1, 1, 1, 1); // 0x01, 0x21, 0x11
+    driver.stage_led(0, 2, 2, 2); // 0x00, 0x20, 0x10
+    block_on(driver.flush()).unwrap();
+
+    let writes = driver.transport().pwm_writes();
+    assert_eq!(writes.len(), 1);
+    let (_, _, reg, data) = &writes[0];
+    assert_eq!((*reg, data.len()), (0x00, 0x22));
+    assert_eq!((data[0x00], data[0x01]), (2, 1));
 }
 
 #[test]
@@ -216,6 +254,37 @@ fn detection_clears_stale_completion_flag_before_triggering() {
 }
 
 #[test]
+fn detect_short_uses_short_bits_and_registers() {
+    let mut driver = initialized_driver();
+    let short_addr = pwm_register(2, 3);
+    let open_only_addr = pwm_register(5, 5);
+    let regs = &mut driver.transport_mut().regs;
+    regs.insert((0, PAGE_FUNCTION, REG_OPEN_SHORT_FLAG), OPEN_SHORT_FLAG_SDINT);
+    regs.insert((0, PAGE_LED_CONTROL, REG_LED_SHORT_FIRST + (short_addr >> 3)), 1 << (short_addr & 0x07));
+    regs.insert((0, PAGE_LED_CONTROL, REG_LED_OPEN_FIRST + (open_only_addr >> 3)), 1 << (open_only_addr & 0x07));
+
+    let map = block_on(driver.detect_short(0, 0x10)).unwrap().unwrap();
+    assert!(map.is_flagged(short_addr));
+    assert!(!map.is_flagged(open_only_addr));
+    assert_eq!((0..=0xBF).filter(|&addr| map.is_flagged(addr)).count(), 1);
+    assert_eq!(driver.transport().writes[1], (0, PAGE_FUNCTION, REG_OPEN_SHORT_ENABLE, vec![0x40]));
+}
+
+#[test]
+fn detect_short_ignores_open_completion_flag() {
+    let mut driver = initialized_driver();
+    driver.transport_mut().regs.insert((0, PAGE_FUNCTION, REG_OPEN_SHORT_FLAG), OPEN_SHORT_FLAG_ODINT);
+    assert_eq!(block_on(driver.detect_short(0, 0x10)), Ok(None));
+}
+
+#[test]
+fn detection_duty_is_clamped_to_upper_limit() {
+    let mut driver = initialized_driver();
+    let _ = block_on(driver.detect_open(0, 0xFF)).unwrap();
+    assert_eq!(driver.transport().writes[2], (0, PAGE_FUNCTION, REG_OPEN_SHORT_DUTY, vec![0xFA]));
+}
+
+#[test]
 fn set_scan_phase_writes_register_value() {
     let mut driver = initialized_driver();
     block_on(driver.set_scan_phase(1, ScanPhase::Channels4)).unwrap();
@@ -225,14 +294,17 @@ fn set_scan_phase_writes_register_value() {
 #[test]
 fn scan_phase_conversions() {
     assert_eq!(ScanPhase::default(), ScanPhase::Channels12);
-    assert_eq!(u8::from(ScanPhase::Channels12), SCAN_PHASE_12_CHANNEL);
+    assert_eq!(ScanPhase::Channels12.register_value(), SCAN_PHASE_12_CHANNEL);
     for count in 1..=12 {
         let phase = ScanPhase::from_active_channels(count).unwrap();
+        assert_eq!(phase.active_channels(), count);
         // Register value counts *inactive* channels: 12 - count.
         assert_eq!(phase.register_value(), 12 - count);
+        assert_eq!(ScanPhase::from_register_value(12 - count), Some(phase));
     }
     assert_eq!(ScanPhase::from_active_channels(0), None);
     assert_eq!(ScanPhase::from_active_channels(13), None);
+    assert_eq!(ScanPhase::from_register_value(0x0C), None);
 }
 
 #[test]

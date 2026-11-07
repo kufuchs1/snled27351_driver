@@ -82,13 +82,20 @@ impl OutputPin for NoSdb {
 ///
 /// # Chip count
 ///
-/// `N` is the number of chips the transport manages. It is a parameter of
-/// the trait (rather than of the driver alone) so that
-/// [`Driver<T, N>`](crate::driver::Driver) can only be built from a
-/// transport managing exactly `N` chips; a mismatch is a compile error, and
-/// `N` is inferred from the transport in
-/// [`Driver::new`](crate::driver::Driver::new). `driver_index` arguments are in
-/// `0..N`; anything else must return an error rather than panic.
+/// `N` is the number of chips the transport manages, and `driver_index`
+/// arguments are in `0..N`; anything else must return an error rather than
+/// panic. `N` is a parameter of the trait (rather than of the driver alone)
+/// so that [`Driver<T, N>`](crate::driver::Driver) can only be built from a
+/// transport that implements `Transport<N>` for that same `N`.
+///
+/// To get the full benefit, implement `Transport<N>` only for the one `N`
+/// your type actually manages, ideally by carrying `N` in the type (e.g. a
+/// `[Device; N]` field), as [`i2c::Controller`](crate::transport::i2c) and
+/// [`spi::Controller`](crate::transport::spi) do. Then a driver/transport
+/// chip-count mismatch is a compile error and
+/// [`Driver::new`](crate::driver::Driver::new) infers `N`. A blanket
+/// `impl<const N: usize> Transport<N>` gives up both: any `N` compiles, and
+/// the driver type needs an explicit `N`.
 pub trait Transport<const N: usize> {
     /// The error type returned by bus operations.
     type Error: Debug;

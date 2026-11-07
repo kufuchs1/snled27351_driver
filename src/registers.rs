@@ -177,12 +177,17 @@ pub const PWM_REGISTER_LAST: u8 = 0xBF;
 /// 0x00-0x0B).
 pub const CURRENT_TUNE_REGISTER_COUNT: usize = 0x0C;
 
-/// Number of active scan phases, i.e. the value of [`REG_SCAN_PHASE`].
+/// Number of active scan phases (CB channels).
 ///
 /// `ChannelsK` activates CB1-CBK for a 1/K duty; the remaining CB channels
 /// are not scanned. Typed counterpart of the `SCAN_PHASE_*_CHANNEL`
 /// constants, accepted by
 /// [`Driver::set_scan_phase`](crate::driver::Driver::set_scan_phase).
+///
+/// Note the two numeric views differ:
+/// [`active_channels`](Self::active_channels) is the count `K`, while
+/// [`register_value`](Self::register_value) is the [`REG_SCAN_PHASE`] encoding,
+/// `12 - K`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[expect(
@@ -218,6 +223,27 @@ pub enum ScanPhase {
 }
 
 impl ScanPhase {
+    /// Returns the number of active CB channels (`1..=12`); the inverse of
+    /// [`from_active_channels`](Self::from_active_channels).
+    #[inline]
+    #[must_use = "the channel count is only useful if used"]
+    pub const fn active_channels(self) -> u8 {
+        match self {
+            Self::Channels1 => 1,
+            Self::Channels2 => 2,
+            Self::Channels3 => 3,
+            Self::Channels4 => 4,
+            Self::Channels5 => 5,
+            Self::Channels6 => 6,
+            Self::Channels7 => 7,
+            Self::Channels8 => 8,
+            Self::Channels9 => 9,
+            Self::Channels10 => 10,
+            Self::Channels11 => 11,
+            Self::Channels12 => 12,
+        }
+    }
+
     /// Returns the variant that scans CB1 through CB`count`, or `None` if
     /// `count` is not in `1..=12`.
     #[inline]
@@ -240,7 +266,32 @@ impl ScanPhase {
         }
     }
 
-    /// Returns the raw [`REG_SCAN_PHASE`] register value.
+    /// Decodes a raw [`REG_SCAN_PHASE`] register value (e.g. one read back
+    /// from the chip); the inverse of [`register_value`](Self::register_value).
+    /// Returns `None` for values above `0x0B`. Only bits \[3:0\] are
+    /// significant, so mask a read-back value with `0x0F` first.
+    #[inline]
+    #[must_use = "the scan phase is only useful if used"]
+    pub const fn from_register_value(value: u8) -> Option<Self> {
+        match value {
+            SCAN_PHASE_1_CHANNEL => Some(Self::Channels1),
+            SCAN_PHASE_2_CHANNEL => Some(Self::Channels2),
+            SCAN_PHASE_3_CHANNEL => Some(Self::Channels3),
+            SCAN_PHASE_4_CHANNEL => Some(Self::Channels4),
+            SCAN_PHASE_5_CHANNEL => Some(Self::Channels5),
+            SCAN_PHASE_6_CHANNEL => Some(Self::Channels6),
+            SCAN_PHASE_7_CHANNEL => Some(Self::Channels7),
+            SCAN_PHASE_8_CHANNEL => Some(Self::Channels8),
+            SCAN_PHASE_9_CHANNEL => Some(Self::Channels9),
+            SCAN_PHASE_10_CHANNEL => Some(Self::Channels10),
+            SCAN_PHASE_11_CHANNEL => Some(Self::Channels11),
+            SCAN_PHASE_12_CHANNEL => Some(Self::Channels12),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw [`REG_SCAN_PHASE`] register value (`12 -`
+    /// [`active_channels`](Self::active_channels)).
     #[inline]
     #[must_use = "the register value is only useful if used"]
     pub const fn register_value(self) -> u8 {
@@ -259,9 +310,4 @@ impl ScanPhase {
             Self::Channels12 => SCAN_PHASE_12_CHANNEL,
         }
     }
-}
-
-impl From<ScanPhase> for u8 {
-    #[inline]
-    fn from(phase: ScanPhase) -> Self { phase.register_value() }
 }
