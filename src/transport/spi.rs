@@ -58,7 +58,7 @@ where
     pub const fn new(devices: [D; N], sdb: S) -> Self { Self { devices, sdb } }
 }
 
-impl<D, S, const N: usize> Transport for Controller<D, S, N>
+impl<D, S, const N: usize> Transport<N> for Controller<D, S, N>
 where
     D: SpiDevice,
     S: OutputPin,
@@ -80,6 +80,19 @@ where
         // The chip drives the response on the third byte of the transfer.
         let [_, _, value] = rx;
         Ok(value)
+    }
+
+    #[inline]
+    async fn read_regs(&mut self, driver_index: usize, page: u8, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
+        // The datasheet (sections 5.1/5.2) documents address auto-increment
+        // for writes only, and shows reads as returning a single byte, so
+        // each register is fetched with its own transfer.
+        let mut current = reg;
+        for slot in buf {
+            *slot = self.read_reg(driver_index, page, current).await?;
+            current = current.wrapping_add(1);
+        }
+        Ok(())
     }
 
     #[inline]

@@ -12,6 +12,7 @@ use snled27351_driver::{
     Driver,
     Led,
     Transport,
+    TransportError,
     pwm_register,
     registers::{
         OPEN_SHORT_FLAG_ODINT,
@@ -19,10 +20,16 @@ use snled27351_driver::{
         PAGE_LED_CONTROL,
         PAGE_PWM,
         REG_LED_OPEN_FIRST,
+        REG_OPEN_SHORT_DUTY,
+        REG_OPEN_SHORT_ENABLE,
         REG_OPEN_SHORT_FLAG,
+        REG_SCAN_PHASE,
         REG_SOFTWARE_SHUTDOWN,
+        SCAN_PHASE_4_CHANNEL,
+        SCAN_PHASE_12_CHANNEL,
         SOFTWARE_SHUTDOWN_SSD_NORMAL,
         SOFTWARE_SHUTDOWN_SSD_SHUTDOWN,
+        ScanPhase,
     },
 };
 use std::collections::HashMap;
@@ -46,7 +53,8 @@ impl MockTransport {
     }
 }
 
-impl Transport for MockTransport {
+/// The mock serves any chip count; tests pick `N` via the `Driver` type.
+impl<const N: usize> Transport<N> for MockTransport {
     type Error = ();
 
     async fn read_reg(&mut self, driver_index: usize, page: u8, reg: u8) -> Result<u8, ()> {
@@ -58,11 +66,11 @@ impl Transport for MockTransport {
     fn set_sdb(&mut self, _enable: bool) -> Result<(), ()> { Ok(()) }
 
     async fn write_page(&mut self, driver_index: usize, page: u8, reg: u8, data: &[u8]) -> Result<(), ()> {
-        if let Some(remaining) = self.fail_count.get_mut(&driver_index)
-            && *remaining > 0
-        {
-            *remaining -= 1;
-            return Err(());
+        if let Some(remaining) = self.fail_count.get_mut(&driver_index) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(());
+            }
         }
         self.writes.push((driver_index, page, reg, data.to_vec()));
         Ok(())
@@ -193,4 +201,54 @@ fn detect_open_reports_flagged_channels() {
 fn detect_open_times_out_without_completion_flag() {
     let mut driver = initialized_driver();
     assert_eq!(block_on(driver.detect_open(0, 0x10)), Ok(None));
+}
+
+#[test]
+fn detection_clears_stale_completion_flag_before_triggering() {
+    let mut driver = initialized_driver();
+    let _ = block_on(driver.detect_open(0, 0x00)).unwrap();
+    // First three writes: clear flag, select test, latch (clamped) duty.
+    assert_eq!(&driver.transport().writes[..3], &[
+        (0, PAGE_FUNCTION, REG_OPEN_SHORT_FLAG, vec![0x00]),
+        (0, PAGE_FUNCTION, REG_OPEN_SHORT_ENABLE, vec![0x80]),
+        (0, PAGE_FUNCTION, REG_OPEN_SHORT_DUTY, vec![0x01]),
+    ]);
+}
+
+#[test]
+fn set_scan_phase_writes_register_value() {
+    let mut driver = initialized_driver();
+    block_on(driver.set_scan_phase(1, ScanPhase::Channels4)).unwrap();
+    assert_eq!(driver.transport().writes, vec![(1, PAGE_FUNCTION, REG_SCAN_PHASE, vec![SCAN_PHASE_4_CHANNEL])]);
+}
+
+#[test]
+fn scan_phase_conversions() {
+    assert_eq!(ScanPhase::default(), ScanPhase::Channels12);
+    assert_eq!(u8::from(ScanPhase::Channels12), SCAN_PHASE_12_CHANNEL);
+    for count in 1..=12 {
+        let phase = ScanPhase::from_active_channels(count).unwrap();
+        // Register value counts *inactive* channels: 12 - count.
+        assert_eq!(phase.register_value(), 12 - count);
+    }
+    assert_eq!(ScanPhase::from_active_channels(0), None);
+    assert_eq!(ScanPhase::from_active_channels(13), None);
+}
+
+#[test]
+#[should_panic(expected = "driver chip the transport does not manage")]
+fn new_rejects_layout_for_missing_chip() {
+    static BAD: [Led; 1] = [Led::new(2, 0, 1, 2)];
+    let _ = Driver::<MockTransport, 2>::new(MockTransport::default(), &BAD);
+}
+
+#[test]
+#[should_panic(expected = "PWM register address must be at most 0xBF")]
+fn led_new_rejects_out_of_range_register() { let _ = std::hint::black_box(Led::new)(0, 0xC0, 0, 0); }
+
+#[test]
+fn transport_error_display() {
+    assert_eq!(TransportError::Bus("nack").to_string(), "bus error: \"nack\"");
+    assert_eq!(TransportError::<()>::InvalidIndex.to_string(), "driver index out of range");
+    let _: &dyn core::error::Error = &TransportError::<()>::Pin;
 }

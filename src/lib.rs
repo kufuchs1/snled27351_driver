@@ -19,7 +19,7 @@
 //! ];
 //!
 //! let transport = i2c::Controller::new(i2c_bus, [i2c::ADDRESS_GND]);
-//! let mut driver: Driver<_, 1> = Driver::new(transport, &LEDS);
+//! let mut driver = Driver::new(transport, &LEDS); // chip count inferred from the transport
 //! driver.init(0xCC).await?; // 0xCC ≈ 32 mA constant current
 //! driver.set_led(0, 255, 0, 128).await?;
 //! ```
@@ -30,4 +30,5 @@ pub mod registers;
 pub mod transport;
 pub use driver::{Driver, Led, LedStatusMap};
 pub use led_address::pwm_register;
+pub use registers::ScanPhase;
 pub use transport::{Error as TransportError, NoSdb, Transport};

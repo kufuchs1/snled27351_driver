@@ -1,8 +1,9 @@
 //! SNLED27351 LED driver.
 //!
 //! Generic over a [`Transport`] `T` so the same driver logic covers both
-//! SPI and I2C without any duplication. `N` is the number of driver chips
-//! and must match the number of devices managed by the transport.
+//! SPI and I2C without any duplication. `N` is the number of driver chips;
+//! it is taken from the transport's [`Transport<N>`] implementation, so a
+//! mismatch between the driver and the transport cannot compile.
 use crate::{
     registers::{
         CURRENT_TUNE_REGISTER_COUNT,
@@ -21,6 +22,7 @@ use crate::{
         PAGE_PWM,
         PULLDOWNUP_ALL_ENABLED,
         PWM_REGISTER_COUNT,
+        PWM_REGISTER_LAST,
         REG_ID,
         REG_LED_OPEN_FIRST,
         REG_LED_SHORT_FIRST,
@@ -34,13 +36,13 @@ use crate::{
         REG_SOFTWARE_SHUTDOWN,
         REG_SOFTWARE_SLEEP,
         REG_THERMAL,
-        SCAN_PHASE_12_CHANNEL,
         SLEW_RATE_CONTROL_MODE_1_PDP_ENABLE,
         SLEW_RATE_CONTROL_MODE_2_ALL_ENABLE,
         SOFTWARE_SHUTDOWN_SSD_NORMAL,
         SOFTWARE_SHUTDOWN_SSD_SHUTDOWN,
         SOFTWARE_SLEEP_DISABLE,
         SOFTWARE_SLEEP_ENABLE,
+        ScanPhase,
     },
     transport::Transport,
 };
@@ -50,7 +52,7 @@ use embassy_time::Timer;
 /// [`Driver::init`], in write order.
 const INIT_FUNCTION_CONFIG: [(u8, u8); 5] = [
     (REG_PULLDOWNUP, PULLDOWNUP_ALL_ENABLED),
-    (REG_SCAN_PHASE, SCAN_PHASE_12_CHANNEL),
+    (REG_SCAN_PHASE, ScanPhase::Channels12.register_value()),
     (REG_SLEW_RATE_CONTROL_MODE_1, SLEW_RATE_CONTROL_MODE_1_PDP_ENABLE),
     (REG_SLEW_RATE_CONTROL_MODE_2, SLEW_RATE_CONTROL_MODE_2_ALL_ENABLE),
     (REG_SOFTWARE_SLEEP, SOFTWARE_SLEEP_DISABLE),
@@ -109,16 +111,29 @@ impl Led {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// use snled27351_driver::driver::Led;
-    /// use snled27351_driver::led_address::pwm_register;
+    /// ```
+    /// use snled27351_driver::{driver::Led, led_address::pwm_register};
     ///
     /// // Red on CB1/CA1, green on CB3/CA1, blue on CB2/CA1.
     /// const MY_LED: Led = Led::new(0, pwm_register(1, 1), pwm_register(3, 1), pwm_register(2, 1));
+    /// assert_eq!(MY_LED.green(), 0x20);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of `red`, `green` or `blue` is above
+    /// [`PWM_REGISTER_LAST`] (`0xBF`).
+    /// In a const context (e.g. a `static` LED layout) this is a compile-time
+    /// error. Addresses produced by
+    /// [`pwm_register`](crate::led_address::pwm_register) are always valid.
     #[inline]
     #[must_use = "constructing an `Led` has no side effects"]
-    pub const fn new(driver: u8, red: u8, green: u8, blue: u8) -> Self { Self { blue, driver, green, red } }
+    pub const fn new(driver: u8, red: u8, green: u8, blue: u8) -> Self {
+        assert!(red <= PWM_REGISTER_LAST, "red PWM register address must be at most 0xBF");
+        assert!(green <= PWM_REGISTER_LAST, "green PWM register address must be at most 0xBF");
+        assert!(blue <= PWM_REGISTER_LAST, "blue PWM register address must be at most 0xBF");
+        Self { blue, driver, green, red }
+    }
 
     /// Returns the PWM register address for the red channel.
     #[inline]
@@ -197,14 +212,15 @@ impl DriverBuf {
 /// SNLED27351 LED driver.
 ///
 /// Generic over a [`Transport`] `T` so the same driver logic covers both
-/// SPI and I2C without any duplication. `N` is the number of driver chips
-/// and must match the number of devices managed by the transport.
+/// SPI and I2C without any duplication. `N` is the number of driver chips;
+/// it is inferred from the transport, which must implement
+/// [`Transport<N>`].
 ///
 /// # Usage
 ///
 /// ```ignore
 /// let transport = spi::Controller::new(devices, sdb_pin);
-/// let mut driver = Driver::new(transport, &LED_LAYOUT);
+/// let mut driver = Driver::new(transport, &LED_LAYOUT); // N inferred from `devices`
 /// driver.init(0xFF).await?;
 /// driver.set_all_leds(255, 255, 255).await?;
 /// ```
@@ -223,9 +239,42 @@ impl DriverBuf {
 /// [`wake`](Self::wake) returns to normal mode from software shutdown or
 /// software sleep; [`hardware_wake`](Self::hardware_wake) from hardware
 /// sleep.
+///
+/// # Compile-time checks
+///
+/// A driver whose chip count differs from the transport's does not compile:
+///
+/// ```compile_fail,E0277
+/// # use snled27351_driver::{Driver, Transport};
+/// # struct OneChip;
+/// # impl Transport<1> for OneChip {
+/// #     type Error = ();
+/// #     async fn read_reg(&mut self, _: usize, _: u8, _: u8) -> Result<u8, ()> { Ok(0) }
+/// #     async fn reset(&mut self) -> Result<(), ()> { Ok(()) }
+/// #     fn set_sdb(&mut self, _: bool) -> Result<(), ()> { Ok(()) }
+/// #     async fn write_page(&mut self, _: usize, _: u8, _: u8, _: &[u8]) -> Result<(), ()> { Ok(()) }
+/// # }
+/// let driver: Driver<OneChip, 2> = Driver::new(OneChip, &[]);
+/// ```
+///
+/// Neither does a `static`/`const` LED layout that refers to a missing chip:
+///
+/// ```compile_fail,E0080
+/// # use snled27351_driver::{Driver, Led, Transport};
+/// # struct OneChip;
+/// # impl Transport<1> for OneChip {
+/// #     type Error = ();
+/// #     async fn read_reg(&mut self, _: usize, _: u8, _: u8) -> Result<u8, ()> { Ok(0) }
+/// #     async fn reset(&mut self) -> Result<(), ()> { Ok(()) }
+/// #     fn set_sdb(&mut self, _: bool) -> Result<(), ()> { Ok(()) }
+/// #     async fn write_page(&mut self, _: usize, _: u8, _: u8, _: &[u8]) -> Result<(), ()> { Ok(()) }
+/// # }
+/// static LEDS: [Led; 1] = [Led::new(1, 0x00, 0x10, 0x20)]; // chip 1 of 0..1
+/// static DRIVER: Driver<OneChip, 1> = Driver::new(OneChip, &LEDS);
+/// ```
 pub struct Driver<T, const N: usize>
 where
-    T: Transport,
+    T: Transport<N>,
 {
     /// PWM shadow buffers, one per chip.
     bufs:      [DriverBuf; N],
@@ -237,7 +286,7 @@ where
 
 impl<T, const N: usize> Driver<T, N>
 where
-    T: Transport,
+    T: Transport<N>,
 {
     /// Reads the thermal detector flag (TDF) from driver chip `index`.
     ///
@@ -418,8 +467,21 @@ where
     /// Creates a new driver from the given transport and LED layout.
     ///
     /// Call [`init`](Self::init) before writing any LED values.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any [`Led`] in `leds` refers to a driver chip index of `N`
+    /// or more, i.e. a chip the transport does not manage. In a const
+    /// context this is a compile-time error.
     #[inline]
     pub const fn new(transport: T, leds: &'static [Led]) -> Self {
+        let mut remaining = leds;
+        while let Some((led, rest)) = remaining.split_first() {
+            #[expect(clippy::as_conversions, reason = "lossless u8 -> usize; `usize::from` is not const")]
+            let chip = led.driver as usize;
+            assert!(chip < N, "LED layout refers to a driver chip the transport does not manage");
+            remaining = rest;
+        }
         Self { transport, leds, bufs: [const { DriverBuf::new() }; N] }
     }
 
@@ -447,6 +509,12 @@ where
         done_flag: u8,
         first_status_reg: u8,
     ) -> Result<Option<LedStatusMap>, T::Error> {
+        // Clear any completion flag left over from an earlier scan (e.g. one
+        // that finished only after its caller timed out), so it cannot be
+        // mistaken for this scan finishing. The flags are set by hardware and
+        // only cleared by software (datasheet register 19h).
+        self.transport.write_page(index, PAGE_FUNCTION, REG_OPEN_SHORT_FLAG, &[0x00]).await?;
+
         // Select the test type, then trigger the scan by latching the duty
         // (writing OSDD starts the re-scan; hardware clears it when done).
         self.transport.write_page(index, PAGE_FUNCTION, REG_OPEN_SHORT_ENABLE, &[start_flag]).await?;
@@ -471,11 +539,7 @@ where
 
         // Collect the per-LED status bitmap from page 0.
         let mut flags = [0_u8; LED_OPEN_REGISTER_COUNT];
-        let mut reg = first_status_reg;
-        for slot in &mut flags {
-            *slot = self.transport.read_reg(index, PAGE_LED_CONTROL, reg).await?;
-            reg = reg.wrapping_add(1);
-        }
+        self.transport.read_regs(index, PAGE_LED_CONTROL, first_status_reg, &mut flags).await?;
         Ok(Some(LedStatusMap { flags }))
     }
 
@@ -517,8 +581,7 @@ where
 
     /// Sets the scan-phase configuration on driver chip `index`.
     ///
-    /// Use one of the `SCAN_PHASE_*_CHANNEL` constants from
-    /// [`registers`](crate::registers). Fewer active phases raise the duty
+    /// Fewer active phases raise the duty
     /// (and brightness) of the remaining CB channels; adjust
     /// [`set_current_tune`](Self::set_current_tune) accordingly per the
     /// datasheet note in section 6.9. [`init`](Self::init) configures all
@@ -528,8 +591,8 @@ where
     ///
     /// Returns `Err(T::Error)` if the bus transaction fails.
     #[inline]
-    pub async fn set_scan_phase(&mut self, index: usize, phase: u8) -> Result<(), T::Error> {
-        self.transport.write_page(index, PAGE_FUNCTION, REG_SCAN_PHASE, &[phase]).await
+    pub async fn set_scan_phase(&mut self, index: usize, phase: ScanPhase) -> Result<(), T::Error> {
+        self.transport.write_page(index, PAGE_FUNCTION, REG_SCAN_PHASE, &[phase.register_value()]).await
     }
 
     /// Puts all driver chips into software shutdown mode.

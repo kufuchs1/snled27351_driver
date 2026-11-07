@@ -171,6 +171,97 @@ pub const REG_LED_SHORT_FIRST: u8 = 0x30;
 pub const LED_SHORT_REGISTER_COUNT: usize = 0x18;
 /// Number of PWM registers per chip (192 = 0xC0, addresses 0x00-0xBF).
 pub const PWM_REGISTER_COUNT: usize = 0xC0;
+/// Highest valid PWM register address (CB12/CA16).
+pub const PWM_REGISTER_LAST: u8 = 0xBF;
 /// Number of current-tuning registers per chip (12 = 0x0C, addresses
 /// 0x00-0x0B).
 pub const CURRENT_TUNE_REGISTER_COUNT: usize = 0x0C;
+
+/// Number of active scan phases, i.e. the value of [`REG_SCAN_PHASE`].
+///
+/// `ChannelsK` activates CB1-CBK for a 1/K duty; the remaining CB channels
+/// are not scanned. Typed counterpart of the `SCAN_PHASE_*_CHANNEL`
+/// constants, accepted by
+/// [`Driver::set_scan_phase`](crate::driver::Driver::set_scan_phase).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "variants are listed in numeric order, matching the register values"
+)]
+pub enum ScanPhase {
+    /// Only CB1 active, 1/1 duty.
+    Channels1,
+    /// CB1-CB2 active, 1/2 duty.
+    Channels2,
+    /// CB1-CB3 active, 1/3 duty.
+    Channels3,
+    /// CB1-CB4 active, 1/4 duty.
+    Channels4,
+    /// CB1-CB5 active, 1/5 duty.
+    Channels5,
+    /// CB1-CB6 active, 1/6 duty.
+    Channels6,
+    /// CB1-CB7 active, 1/7 duty.
+    Channels7,
+    /// CB1-CB8 active, 1/8 duty.
+    Channels8,
+    /// CB1-CB9 active, 1/9 duty.
+    Channels9,
+    /// CB1-CB10 active, 1/10 duty.
+    Channels10,
+    /// CB1-CB11 active, 1/11 duty.
+    Channels11,
+    /// All 12 scan phases active (CB1-CB12, 1/12 duty); the chip default.
+    #[default]
+    Channels12,
+}
+
+impl ScanPhase {
+    /// Returns the variant that scans CB1 through CB`count`, or `None` if
+    /// `count` is not in `1..=12`.
+    #[inline]
+    #[must_use = "the scan phase is only useful if used"]
+    pub const fn from_active_channels(count: u8) -> Option<Self> {
+        match count {
+            1 => Some(Self::Channels1),
+            2 => Some(Self::Channels2),
+            3 => Some(Self::Channels3),
+            4 => Some(Self::Channels4),
+            5 => Some(Self::Channels5),
+            6 => Some(Self::Channels6),
+            7 => Some(Self::Channels7),
+            8 => Some(Self::Channels8),
+            9 => Some(Self::Channels9),
+            10 => Some(Self::Channels10),
+            11 => Some(Self::Channels11),
+            12 => Some(Self::Channels12),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw [`REG_SCAN_PHASE`] register value.
+    #[inline]
+    #[must_use = "the register value is only useful if used"]
+    pub const fn register_value(self) -> u8 {
+        match self {
+            Self::Channels1 => SCAN_PHASE_1_CHANNEL,
+            Self::Channels2 => SCAN_PHASE_2_CHANNEL,
+            Self::Channels3 => SCAN_PHASE_3_CHANNEL,
+            Self::Channels4 => SCAN_PHASE_4_CHANNEL,
+            Self::Channels5 => SCAN_PHASE_5_CHANNEL,
+            Self::Channels6 => SCAN_PHASE_6_CHANNEL,
+            Self::Channels7 => SCAN_PHASE_7_CHANNEL,
+            Self::Channels8 => SCAN_PHASE_8_CHANNEL,
+            Self::Channels9 => SCAN_PHASE_9_CHANNEL,
+            Self::Channels10 => SCAN_PHASE_10_CHANNEL,
+            Self::Channels11 => SCAN_PHASE_11_CHANNEL,
+            Self::Channels12 => SCAN_PHASE_12_CHANNEL,
+        }
+    }
+}
+
+impl From<ScanPhase> for u8 {
+    #[inline]
+    fn from(phase: ScanPhase) -> Self { phase.register_value() }
+}

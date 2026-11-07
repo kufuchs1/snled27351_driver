@@ -18,7 +18,11 @@
 //! `transport::spi::Controller` and `transport::i2c::Controller`.
 #[cfg(feature = "i2c")] pub mod i2c;
 #[cfg(feature = "spi")] pub mod spi;
-use core::{convert::Infallible, fmt::Debug};
+use core::{
+    convert::Infallible,
+    error::Error as CoreError,
+    fmt::{self, Debug, Display, Formatter},
+};
 #[cfg(any(feature = "i2c", feature = "spi"))]
 use embassy_time::Timer;
 use embedded_hal::digital::{ErrorType, OutputPin, PinState};
@@ -72,9 +76,20 @@ impl OutputPin for NoSdb {
 ///   datasheet section 4.2).
 ///
 /// Both cases are handled transparently inside the transport; the driver
-/// core always calls [`write_page`](Transport::write_page) and
-/// [`read_reg`](Transport::read_reg) with a plain page number.
-pub trait Transport {
+/// core always calls [`write_page`](Transport::write_page),
+/// [`read_reg`](Transport::read_reg) and [`read_regs`](Transport::read_regs)
+/// with a plain page number.
+///
+/// # Chip count
+///
+/// `N` is the number of chips the transport manages. It is a parameter of
+/// the trait (rather than of the driver alone) so that
+/// [`Driver<T, N>`](crate::driver::Driver) can only be built from a
+/// transport managing exactly `N` chips; a mismatch is a compile error, and
+/// `N` is inferred from the transport in
+/// [`Driver::new`](crate::driver::Driver::new). `driver_index` arguments are in
+/// `0..N`; anything else must return an error rather than panic.
+pub trait Transport<const N: usize> {
     /// The error type returned by bus operations.
     type Error: Debug;
 
@@ -85,6 +100,27 @@ pub trait Transport {
         reason = "This crate targets single-core Cortex-M; Send bounds on futures are unnecessary"
     )]
     async fn read_reg(&mut self, driver_index: usize, page: u8, reg: u8) -> Result<u8, Self::Error>;
+
+    /// Selects `page` on chip `driver_index`, then reads `buf.len()`
+    /// consecutive registers starting at `reg` into `buf`.
+    ///
+    /// The default implementation issues one [`read_reg`](Self::read_reg)
+    /// per byte, which is correct for any transport. Implementations may
+    /// override it with a single burst transfer when the bus supports
+    /// register auto-increment on reads.
+    #[expect(
+        async_fn_in_trait,
+        reason = "This crate targets single-core Cortex-M; Send bounds on futures are unnecessary"
+    )]
+    #[inline]
+    async fn read_regs(&mut self, driver_index: usize, page: u8, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
+        let mut current = reg;
+        for slot in buf {
+            *slot = self.read_reg(driver_index, page, current).await?;
+            current = current.wrapping_add(1);
+        }
+        Ok(())
+    }
 
     /// Prepares the chips for register programming.
     ///
@@ -140,6 +176,10 @@ pub trait Transport {
 /// [`I2c::Error`]: embedded_hal_async::i2c::ErrorType::Error
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+#[expect(
+    clippy::error_impl_error,
+    reason = "public name kept for API stability; re-exported as `TransportError` at the crate root"
+)]
 pub enum Error<E> {
     /// An underlying bus (SPI or I2C) error occurred.
     Bus(E),
@@ -149,6 +189,29 @@ pub enum Error<E> {
     PayloadTooLarge,
     /// An `OutputPin` operation failed.
     Pin,
+}
+
+#[expect(
+    clippy::missing_trait_methods,
+    reason = "the defaults are correct: bus errors are only `Debug`, so there is no `source`"
+)]
+impl<E> CoreError for Error<E> where E: Debug {}
+
+impl<E> Display for Error<E>
+where
+    E: Debug,
+{
+    #[inline]
+    #[expect(clippy::use_debug, reason = "embedded-hal bus errors are only guaranteed to implement `Debug`")]
+    #[expect(clippy::ref_patterns, reason = "borrowing through `match *self` satisfies `pattern_type_mismatch`")]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Bus(ref error) => write!(f, "bus error: {error:?}"),
+            Self::InvalidIndex => f.write_str("driver index out of range"),
+            Self::PayloadTooLarge => f.write_str("payload exceeds the maximum transfer size"),
+            Self::Pin => f.write_str("SDB pin operation failed"),
+        }
+    }
 }
 
 impl<E> From<E> for Error<E> {
