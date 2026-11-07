@@ -6,6 +6,7 @@ repository = "https://github.com/fuchskurt/snled27351_driver"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
 categories = ["embedded", "no-std", "hardware-support"]
 keywords = ["led", "driver", "embedded-hal", "async", "no-std"]
 
@@ -20,6 +21,10 @@ spi = []
 embedded-hal = "1"
 embedded-hal-async = "1"
 embassy-time = "0.5"
+
+[dev-dependencies]
+embassy-futures = "0.1"
+embassy-time = { version = "0.5", features = ["std", "generic-queue-8"] }
 
 [workspace]
 
@@ -48,10 +53,3 @@ workspace = true
 name = "snled27351_driver"
 test = false
 bench = false
-
-[profile.release]
-lto = "fat"
-codegen-units = 1
-debug = false
-strip = "symbols"
-overflow-checks = false

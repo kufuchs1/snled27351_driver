@@ -13,7 +13,7 @@
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use snled27351_driver::led_address::pwm_register;
 ///
 /// assert_eq!(pwm_register(1, 1), 0x00); // CB1/CA1
@@ -27,7 +27,7 @@
 /// in a const context (e.g. a `static` LED layout), this becomes a
 /// compile-time error.
 #[inline]
-#[must_use]
+#[must_use = "the computed register address is only useful if used"]
 pub const fn pwm_register(cb: u8, ca: u8) -> u8 {
     assert!(matches!(cb, 1..=12), "cb must be in 1..=12");
     assert!(matches!(ca, 1..=16), "ca must be in 1..=16");

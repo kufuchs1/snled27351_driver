@@ -119,7 +119,7 @@ where
     }
 }
 
-impl<B, S, const N: usize> Transport for Controller<B, S, N>
+impl<B, S, const N: usize> Transport<N> for Controller<B, S, N>
 where
     B: I2c,
     S: OutputPin,
@@ -137,6 +137,19 @@ where
 
         let [value] = buf;
         Ok(value)
+    }
+
+    #[inline]
+    async fn read_regs(&mut self, driver_index: usize, page: u8, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
+        // The datasheet (sections 4.1/4.2) documents address auto-increment
+        // for writes only, and shows reads as returning a single byte, so
+        // each register is fetched with its own transfer.
+        let mut current = reg;
+        for slot in buf {
+            *slot = self.read_reg(driver_index, page, current).await?;
+            current = current.wrapping_add(1);
+        }
+        Ok(())
     }
 
     #[inline]

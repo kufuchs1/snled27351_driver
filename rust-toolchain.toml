@@ -1,2 +1,5 @@
 [toolchain]
-channel = "nightly"
+# Pinned because the crate denies every clippy lint group: a floating nightly
+# would break CI whenever a new lint lands. Bump the date deliberately.
+channel = "nightly-2026-11-07"
+components = ["rustfmt", "clippy"]

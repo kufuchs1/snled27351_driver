@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Lint, test and document on the dated nightly pinned in
+  # rust-toolchain.toml.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy (no features)
+        run: cargo clippy --all-targets
+      - name: Clippy (i2c)
+        run: cargo clippy --all-targets --features i2c
+      - name: Clippy (spi)
+        run: cargo clippy --all-targets --features spi
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features
+      - name: Test
+        run: cargo test --all-features
+      - name: Docs
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Make sure the library builds for a bare-metal target.
+  no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (no features)
+        run: cargo build --target thumbv7em-none-eabihf
+      - name: Build (all features)
+        run: cargo build --target thumbv7em-none-eabihf --all-features
+
+  # Check the library against the declared rust-version. Tests are excluded:
+  # their dev-dependencies need a newer compiler.
+  # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every step, including
+  # the cache action, so the job never installs or keys on nightly.
+  msrv:
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.85"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.85 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Check (no features)
+        run: cargo check
+      - name: Check (i2c)
+        run: cargo check --features i2c
+      - name: Check (spi)
+        run: cargo check --features spi
+      - name: Check (all features)
+        run: cargo check --all-features
